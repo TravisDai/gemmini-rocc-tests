@@ -43,6 +43,16 @@
 #define CONFIG_LD 1
 #define CONFIG_ST 2
 
+//special ROB instruction
+#define CONFIG_ROB 3 
+#define R_CONFIG_mvin 0
+#define R_CONFIG_matmul 1
+#define R_CONFIG_mvout 2
+#define R_CONFIG_mvinD 3
+#define R_MVIN_A 4
+#define R_MVIN_B 5
+#define R_COMPUTE 6
+
 #define XCUSTOM_ACC 3
 
 #define GARBAGE_ADDR ((uint32_t)(-1))
@@ -226,6 +236,29 @@ scale_acc_t_bits scale_acc_t_to_scale_acc_t_bits(scale_acc_t x) {
 
 #define gemmini_config_st(stride) \
     gemmini_extended_config_st(stride, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+//ROB special instructions
+#define gemmini_rob_config_ld(B_sp_base, A_stride, A_scale, B_stride, B_scale, D_stride, D_scale)\
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(B_sp_base) << ADDR_LEN) | ((uint64_t)(A_scale) << 17) | ((uint64_t)(B_scale) << 2) | CONFIG_ROB, ((uint64_t)(A_stride) << 16) | ((uint64_t)(B_stride)), R_CONFIG_mvin)
+
+#define gemmini_rob_config_ex(mode, act, sys_shift, acc_shift, relu6_shift, A_transpose, B_transpose, D_stride, D_scale) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(acc_shift) << 41) | ((uint64_t)(D_stride) << 16) | (B_transpose << 9) | (A_transpose << 8) | ((act) << 3) | ((mode) << 2) | CONFIG_ROB, ((uint64_t)(relu6_shift) << 42) | ((uint64_t) (D_scale) << 32) | (sys_shift), R_CONFIG_matmul)
+
+#define gemmini_rob_config_st(stride, C_dram_base) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(stride) << 2) | CONFIG_ROB, C_dram_base, R_CONFIG_mvout)
+
+#define gemmini_rob_config_bias(stride, D_dram_base) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(stride) << 2) | CONFIG_ROB, D_dram_base, R_CONFIG_mvinD)
+
+#define gemmini_rob_mvinA(dram_base, current_I, K, pad_I, pad_K) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 41) | ((uint64_t)(K) << 18) | ((uint64_t)(pad_I) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, dram_base, R_MVIN_A)
+
+#define gemmini_rob_mvinB(dram_base, current_J, K, pad_J, pad_K) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 41) | ((uint64_t)(K) << 18) | ((uint64_t)(pad_J) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, dram_base, R_MVIN_B)
+
+#define gemmini_rob_compute(current_I, current_J, K, pad_I, pad_J, pad_K) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 50) | ((uint64_t)(current_J) << 36) | ((uint64_t)(K) << 20) | ((uint64_t)(pad_I) << 14) | ((uint64_t)(pad_J) << 8) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, 0, R_COMPUTE)
+//can encode more
 
 // flush
 #define gemmini_flush(skip) \
