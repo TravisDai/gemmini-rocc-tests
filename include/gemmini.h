@@ -44,14 +44,13 @@
 #define CONFIG_ST 2
 
 //special ROB instruction
-#define CONFIG_ROB 3 
-#define R_CONFIG_mvin 0
-#define R_CONFIG_matmul 1
-#define R_CONFIG_mvout 2
-#define R_CONFIG_mvinD 3
-#define R_MVIN_A 4
-#define R_MVIN_B 5
-#define R_COMPUTE 6
+//#define CONFIG_ROB 3 
+#define R_CONFIG_mvin 9
+#define R_CONFIG_matmul 10
+#define R_CONFIG_mvout 11
+#define R_CONFIG_mvinD 12
+#define R_MVIN 13
+#define R_COMPUTE 15
 
 #define XCUSTOM_ACC 3
 
@@ -221,12 +220,15 @@ scale_acc_t_bits scale_acc_t_to_scale_acc_t_bits(scale_acc_t x) {
     gemmini_extended_config_ex(mode, act, sys_shift, acc_shift, relu6_shift, 1, 0, 0)
 
 #if defined(HAS_MVIN_SCALE) || defined(HAS_MVIN_ACC_SCALE)
-#define gemmini_extended_config_ld(stride, scale) \
-  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(scale_t_to_scale_t_bits(scale)) << 32) | CONFIG_LD, stride, k_CONFIG)
+#define gemmini_extended2_config_ld(stride, scale, shrunk) \
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(scale_t_to_scale_t_bits(scale)) << 32) | ((shrunk) << 2) | CONFIG_LD, stride, k_CONFIG)
 #else
-#define gemmini_extended_config_ld(stride, scale) \
-  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, CONFIG_LD, stride, k_CONFIG)
+#define gemmini_extended2_config_ld(stride, scale, shrunk) \
+  ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, CONFIG_LD, stride, ((shrunk) << 2) | k_CONFIG)
 #endif
+
+#define gemmini_extended_config_ld(stride, scale) \
+  gemmini_extended2_config_ld(stride, scale, false)
 
 #define gemmini_config_ld(stride) \
   gemmini_extended_config_ld(stride, MVIN_SCALE_ONE)
@@ -238,26 +240,26 @@ scale_acc_t_bits scale_acc_t_to_scale_acc_t_bits(scale_acc_t x) {
     gemmini_extended_config_st(stride, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 //ROB special instructions
-#define gemmini_rob_config_ld(B_sp_base, A_stride, A_scale, B_stride, B_scale, D_stride, D_scale)\
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(B_sp_base) << ADDR_LEN) | ((uint64_t)(A_scale) << 17) | ((uint64_t)(B_scale) << 2) | CONFIG_ROB, ((uint64_t)(A_stride) << 16) | ((uint64_t)(B_stride)), R_CONFIG_mvin)
+#define gemmini_rob_config_ld(B_sp_base, A_stride, A_scale, B_stride, B_scale)\
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(B_sp_base) << ADDR_LEN) | ((uint64_t)(A_scale) << 16) | ((uint64_t)(B_scale)), ((uint64_t)(A_stride) << 32) | ((uint64_t)(B_stride)), R_CONFIG_mvin)
 
-#define gemmini_rob_config_ex(mode, act, sys_shift, acc_shift, relu6_shift, A_transpose, B_transpose, D_stride, D_scale) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(acc_shift) << 41) | ((uint64_t)(D_stride) << 16) | (B_transpose << 9) | (A_transpose << 8) | ((act) << 3) | ((mode) << 2) | CONFIG_ROB, ((uint64_t)(relu6_shift) << 42) | ((uint64_t) (D_scale) << 32) | (sys_shift), R_CONFIG_matmul)
+#define gemmini_rob_config_ex(mode, act, sys_shift, acc_shift, relu6_shift, A_transpose, B_transpose, I, J) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(acc_shift) << 39) | ((uint64_t)(sys_shift) << 24) | ((uint64_t)(relu6_shift) << 14) | (B_transpose << 7) | (A_transpose << 6) | ((act) << 1) | mode, ((uint64_t)(I) << 16) | ((uint64_t)(J)), R_CONFIG_matmul)
 
-#define gemmini_rob_config_st(stride, C_dram_base) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(stride) << 2) | CONFIG_ROB, C_dram_base, R_CONFIG_mvout)
+#define gemmini_rob_config_st(stride, dram_base) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, stride, dram_base, R_CONFIG_mvout)
 
-#define gemmini_rob_config_bias(stride, D_dram_base) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(stride) << 2) | CONFIG_ROB, D_dram_base, R_CONFIG_mvinD)
+#define gemmini_rob_config_bias(stride, scale, repeating_bias, dram_base) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(scale) << 54) | ((uint64_t)(repeating_bias) << 32) | ((uint64_t)(stride)), dram_base, R_CONFIG_mvinD)
 
-#define gemmini_rob_mvinA(dram_base, current_I, K, pad_I, pad_K) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 41) | ((uint64_t)(K) << 18) | ((uint64_t)(pad_I) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, dram_base, R_MVIN_A)
+#define gemmini_rob_mvinA(dram_base, current_I, K, pad_I, pad_K, block) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 42) | ((uint64_t)(K) << 24) | ((uint64_t)(block) << 18) | ((uint64_t)(pad_I) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_LD, dram_base, R_MVIN)
 
-#define gemmini_rob_mvinB(dram_base, current_J, K, pad_J, pad_K) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 41) | ((uint64_t)(K) << 18) | ((uint64_t)(pad_J) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, dram_base, R_MVIN_B)
+#define gemmini_rob_mvinB(dram_base, current_J, K, pad_J, pad_K, block) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_J) << 42) | ((uint64_t)(K) << 24) | ((uint64_t)(block) << 18) | ((uint64_t)(pad_J) << 10) | ((uint64_t)(pad_K) << 2) | CONFIG_EX, dram_base, R_MVIN)
 
-#define gemmini_rob_compute(current_I, current_J, K, pad_I, pad_J, pad_K) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 50) | ((uint64_t)(current_J) << 36) | ((uint64_t)(K) << 20) | ((uint64_t)(pad_I) << 14) | ((uint64_t)(pad_J) << 8) | ((uint64_t)(pad_K) << 2) | CONFIG_ROB, 0, R_COMPUTE)
+#define gemmini_rob_compute(current_I, current_J, K, pad_I, pad_J, pad_K, first_k) \
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(current_I) << 48) | ((uint64_t)(current_J) << 34) | ((uint64_t)(K) << 18) | ((uint64_t)(pad_I) << 12) | ((uint64_t)(pad_J) << 6) | ((uint64_t)(pad_K)), first_k, R_COMPUTE)
 //can encode more
 
 // flush
@@ -383,6 +385,62 @@ static void sp_tiled_matmul_os(const elem_t * A, const elem_t * B, const acc_t *
   }
 }
 
+static void sp_tiled_matmul_ws_rob(const elem_t * A, const elem_t * B,
+        const acc_t * D, elem_t * C,
+        scale_t A_scale_factor, scale_t B_scale_factor, scale_acc_t D_scale_factor,
+        size_t I, size_t J, size_t K, size_t pad_I, size_t pad_J, size_t pad_K,
+        size_t A_row_stride, size_t B_row_stride, size_t D_row_stride, size_t C_row_stride,
+        bool no_bias, bool repeating_bias, bool first_k) {
+
+  const uint32_t B_sp_base = BANK_NUM * BANK_ROWS - K * J * DIM;
+  const int A_blocks = K <= MAX_BLOCK_LEN ? K : MAX_BLOCK_LEN;
+  const int B_blocks = J <= MAX_BLOCK_LEN ? J : MAX_BLOCK_LEN;
+ 
+  //set tag for tile, can set stride = 0 in case reuse of A is needed
+	printf("config_ld \n");
+  gemmini_rob_config_ld(B_sp_base, A_row_stride, A_scale_factor, B_row_stride, B_scale_factor);
+
+  //has bias
+  if(D!=NULL && !no_bias){
+	  printf("config_bias \n");
+	  gemmini_rob_config_bias(D_row_stride * sizeof(acc_t), D_scale_factor, repeating_bias, D);
+  }
+  //has output
+  if(C!=NULL){
+	  printf("config_store \n");
+	  gemmini_rob_config_st(C_row_stride * sizeof(elem_t), C);
+  }
+  //give bias-output ID tag to track which compute entry is under which config command
+  
+  //first mvin one row of A
+  printf("mvin A 1st row \n");
+  gemmini_rob_mvinA(A, 0, K, pad_I, pad_K, A_blocks);
+
+  printf("mvin B and compute 1st row \n");
+  for(size_t j = 0; j < J; j += B_blocks){
+	  printf("mvin B: %d \n", j);
+	  gemmini_rob_mvinB(B + j*DIM, j, K, pad_J, pad_K, B_blocks);
+	  int jj_bound = j+B_blocks > J ? J : j + B_blocks;
+	  for(size_t jj = j; jj < jj_bound; jj++){
+		  printf("compute: %d \n", jj);
+		  const size_t A_rows = DIM - (0 == I-1? pad_I:0);
+		  const size_t B_cols = DIM - (jj == J-1? pad_J:0);
+		  gemmini_rob_compute(0, jj, K, A_rows, B_cols, pad_K, first_k);
+	  }
+  }
+
+  printf("compute rest of rows \n");
+  for(size_t i = 1; i < I; i++){
+	  gemmini_rob_mvinA(A + i*A_row_stride*DIM, i, K, pad_I, pad_K, A_blocks);
+	  for(size_t j = 0; j < J; j++){
+		  const size_t A_rows = DIM - (i == I-1? pad_I:0);
+		  const size_t B_cols = DIM - (j == J-1? pad_J:0);
+		  gemmini_rob_compute(i, j, K, A_rows, B_cols, pad_K, first_k);
+	  }  
+  }
+
+}
+
 static void sp_tiled_matmul_ws(const elem_t * A, const elem_t * B,
         const acc_t * D, elem_t * C,
         scale_t A_scale_factor, scale_t B_scale_factor, scale_acc_t D_scale_factor,
@@ -501,6 +559,93 @@ static void sp_tiled_matmul_ws(const elem_t * A, const elem_t * B,
       }
     }
   }
+}
+
+static void tiled_matmul_outer_rob(size_t dim_I, size_t dim_J, size_t dim_K,
+        const elem_t* A, const elem_t* B,
+        const acc_t * D, elem_t* C,
+        size_t stride_A, size_t stride_B, size_t stride_D, size_t stride_C,
+        scale_t A_scale_factor, scale_t B_scale_factor, scale_acc_t D_scale_factor,
+        size_t tile_I, size_t tile_J, size_t tile_K,
+        int act, int shift, size_t relu6_shift, bool repeating_bias,
+        int dataflow) {
+
+  const size_t dim_I_padded = (dim_I / DIM + (dim_I % DIM != 0)) * DIM;
+  const size_t dim_J_padded = (dim_J / DIM + (dim_J % DIM != 0)) * DIM;
+  const size_t dim_K_padded = (dim_K / DIM + (dim_K % DIM != 0)) * DIM;
+
+  const size_t I0 = dim_I_padded / (tile_I*DIM) + (dim_I_padded % (tile_I*DIM) != 0);
+  const size_t J0 = dim_J_padded / (tile_J*DIM) + (dim_J_padded % (tile_J*DIM) != 0);
+  const size_t K0 = dim_K_padded / (tile_K*DIM) + (dim_K_padded % (tile_K*DIM) != 0);
+
+  // These lines here are supposed to help us deal with when the dimensions of
+  // the systolic array aren't divisible by the tiling factors
+  const size_t last_I = dim_I_padded % (tile_I*DIM) == 0 ? tile_I : (dim_I_padded/DIM) % tile_I;
+  const size_t last_J = dim_J_padded % (tile_J*DIM) == 0 ? tile_J : (dim_J_padded/DIM) % tile_J;
+  const size_t last_K = dim_K_padded % (tile_K*DIM) == 0 ? tile_K : (dim_K_padded/DIM) % tile_K;
+
+  // These lines are supposed to figure out how much padding the hardware is
+  // supposed to add for the final tile
+  const size_t padding_I = dim_I_padded - dim_I;
+  const size_t padding_J = dim_J_padded - dim_J;
+  const size_t padding_K = dim_K_padded - dim_K;
+
+  const bool no_bias = D == NULL;
+
+  if (no_bias) {
+    D = (acc_t*) 1; // Dummy address which isn't NULL
+  }
+
+ 
+  for (size_t i0 = 0; i0 < I0; i0++)
+    for (size_t j0 = 0; j0 < J0; j0++)
+      for (size_t k0 = 0; k0 < K0; k0++) {
+			printf("tile i: %d, j: %d, k: %d \n", i0, j0, k0);
+			bool first_k = false;
+			if(k0 == 0) first_k = true;
+        const acc_t * pre;
+        if (k0 != K0/2) { //preload in the middle
+          pre = NULL;
+        } else {
+          size_t bias_row = repeating_bias ? 0 : i0*tile_I*DIM;
+          pre = &(((acc_t*)D)[bias_row * stride_D + j0 * tile_J * DIM]);
+        }
+        elem_t * out = k0 == K0-1 ? C + i0*tile_I*DIM*stride_C + j0*tile_J*DIM : NULL;
+
+        const size_t I = i0 < I0-1 ? tile_I : last_I;
+        const size_t J = j0 < J0-1 ? tile_J : last_J;
+        const size_t K = k0 < K0-1 ? tile_K : last_K;
+	 	gemmini_rob_config_ex(dataflow, act, 0, shift, relu6_shift, 0, 0, I, J);
+
+
+        const size_t pad_I = i0 == I0-1 ? padding_I : 0;
+        const size_t pad_J = j0 == J0-1 ? padding_J : 0;
+        const size_t pad_K = k0 == K0-1 ? padding_K : 0;
+
+        if (dataflow == OUTPUT_STATIONARY) {
+/* not yet
+			  sp_tiled_matmul_os(A + i0*tile_I*DIM*stride_A + k0*tile_K*DIM,
+              B + k0*tile_K*DIM*stride_B + j0*tile_J*DIM,
+              pre, out,
+              A_scale_factor, B_scale_factor, D_scale_factor,
+              I, J, K,
+              pad_I, pad_J, pad_K,
+              stride_A, stride_B, stride_D, stride_C,
+              no_bias, repeating_bias);
+*/
+			} else {
+          sp_tiled_matmul_ws_rob(A + i0*tile_I*DIM*stride_A + k0*tile_K*DIM,
+              B + k0*tile_K*DIM*stride_B + j0*tile_J*DIM,
+              pre, out,
+              A_scale_factor, B_scale_factor, D_scale_factor,
+              I, J, K,
+              pad_I, pad_J, pad_K,
+              stride_A, stride_B, stride_D, stride_C,
+              no_bias, repeating_bias, first_k);
+        }
+      }
+
+  gemmini_fence();
 }
 
 static void tiled_matmul_outer(size_t dim_I, size_t dim_J, size_t dim_K,
@@ -843,7 +988,7 @@ void tiled_matmul(size_t dim_I, size_t dim_J, size_t dim_K,
 
   // Run a tiled matrix multiplication on either Gemmini or the CPU
   if (tiled_matmul_type == OS || tiled_matmul_type == WS) {
-      tiled_matmul_outer(dim_I, dim_J, dim_K,
+      tiled_matmul_outer_rob(dim_I, dim_J, dim_K,
               A, B, D, C,
               stride_A, stride_B, stride_D, stride_C,
               A_scale_factor, B_scale_factor, D_scale_factor,
