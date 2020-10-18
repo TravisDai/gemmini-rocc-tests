@@ -496,9 +496,9 @@ static void sp_tiled_matmul_ws(const elem_t * A, const elem_t * B,
 
   // Move-in B
   gemmini_extended_config_ld(B_row_stride * sizeof(elem_t), B_scale_factor);
-  for (size_t j = 0; j < J; j += B_blocks) {
-    for (size_t k = 0; k < K; k++) {
-      const elem_t * const B_dram_addr = B + (k*B_row_stride + j)*DIM;
+  for (size_t k = 0; k < K; k++) {
+	 for (size_t j = 0; j < J; j += B_blocks) {
+		const elem_t * const B_dram_addr = B + (k*B_row_stride + j)*DIM;
       const uint32_t B_sp_addr = B_sp_addr_start + (k*J + j)*DIM;
       const size_t blocks = j + B_blocks <= J ? B_blocks : J-j;
       const size_t cols = blocks * DIM - (j + blocks >= J ? pad_J : 0);
@@ -509,9 +509,9 @@ static void sp_tiled_matmul_ws(const elem_t * A, const elem_t * B,
 
   // Move-in A
   gemmini_extended_config_ld(A_row_stride * sizeof(elem_t), A_scale_factor);
-  for (size_t k = 0; k < K; k += A_blocks) {
-    for (size_t i = 0; i < I; i++) {
-      const elem_t * const A_dram_addr = A + (i * A_row_stride + k)*DIM;
+  for (size_t i = 0; i < I; i++) {
+	 for (size_t k = 0; k < K; k += A_blocks) {
+	   const elem_t * const A_dram_addr = A + (i * A_row_stride + k)*DIM;
       const uint32_t A_sp_addr = A_sp_addr_start + (i*K + k)*DIM;
       const size_t blocks = k + A_blocks <= K ? A_blocks : K-k;
       const size_t cols = blocks * DIM - (k + blocks >= K ? pad_K : 0);
@@ -1358,21 +1358,19 @@ void sp_tiled_conv(
     // mvin weights
     // printf("mvin weights\n");
     gemmini_config_ld(out_channels * sizeof(elem_t));
-    for (int och = 0; och < ochs; och += DIM) {
-        const int J = ochs - och > DIM ? DIM : ochs - och;
-
-        for (int krow = 0; krow < krows; krow++)
-            for (int kcol = 0; kcol < kcols; kcol++)
-                for (int kch = 0; kch < kchs; kch += DIM) {
-                    const int K = kchs - kch > DIM ? DIM : kchs - kch;
-
-                    const uint32_t B_sp_addr = B_sp_addr_start + (och / DIM) * krows * kcols * kchs + krow * kcols * kchs + kcol * kchs + kch;
-
-                    gemmini_extended_mvin(weights + (krow*kernel_dim*in_channels + kcol*in_channels + kch) * out_channels + och,
+    for (int krow = 0; krow < krows; krow++)
+       for (int kcol = 0; kcol < kcols; kcol++) {
+			 for (int kch = 0; kch < kchs; kch += DIM) {
+				 const int K = kchs - kch > DIM ? DIM : kchs - kch;
+				 for (int och = 0; och < ochs; och += DIM){ 
+					 const int J = ochs - och > DIM ? DIM : ochs - och;
+					 const uint32_t B_sp_addr = B_sp_addr_start + (och / DIM) * krows * kcols * kchs + krow * kcols * kchs + kcol * kchs + kch;
+					 gemmini_extended_mvin(weights + (krow*kernel_dim*in_channels + kcol*in_channels + kch) * out_channels + och,
                         B_sp_addr,
                         J, K);
-                }
-    }
+				 }
+			 }
+		 }
 
     // Compute
     for (int b = 0; b < batches; b++)
