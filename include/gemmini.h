@@ -241,8 +241,8 @@ scale_acc_t_bits scale_acc_t_to_scale_acc_t_bits(scale_acc_t x) {
     gemmini_extended_config_st(stride, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 //ROB special instructions (A_row: K*DIM/ichs, B_row: J*DIM/ochs)
-#define gemmini_rob_config_ld(A_block, B_block, A_stride, A_scale, B_stride, B_scale, A_row, B_row)\
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(B_row) << 48) | ((uint64_t)(A_row) << 32) | ((uint64_t)(A_block) << 24) | ((uint64_t)(B_block) << 16) | ((uint64_t)(A_scale) << 8) | ((uint64_t)(B_scale)), ((uint64_t)(A_stride) << 32) | ((uint64_t)(B_stride)), R_CONFIG_mvin)
+#define gemmini_rob_config_ld(A_block, B_block, A_stride, A_scale, B_stride, B_scale, A_row, B_row, icol, upad)\
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(B_row) << 48) | ((uint64_t)(A_row) << 32) | ((uint64_t)(A_block) << 28) | ((uint64_t)(B_block) << 24) | ((uint64_t)(icol) << 16) | ((uint64_t)(upad) << 14) | ((uint64_t)(A_scale) << 7) | ((uint64_t)(B_scale)), ((uint64_t)(A_stride) << 32) | ((uint64_t)(B_stride)), R_CONFIG_mvin)
 
 // J - och / K - kch
 #define gemmini_rob_config_ex(mode, act, sys_shift, acc_shift, relu6_shift, A_transpose, B_transpose, A_stride, AK_coeff, BJ_coeff, BK_coeff, CJ_coeff, A_row, B_row) \
@@ -414,7 +414,7 @@ static void sp_tiled_matmul_ws_rob(const elem_t * A, const elem_t * B,
   //set tag for tile, can set stride = 0 in case reuse of A is needed
   //if stride = 0, keep spad counter for that input
   printf("config_ld \n");
-  gemmini_rob_config_ld(A_blocks, B_blocks, A_row_stride, A_scale_factor, B_row_stride, B_scale_factor, K*DIM, J*DIM);
+  gemmini_rob_config_ld(A_blocks, B_blocks, A_row_stride, A_scale_factor, B_row_stride, B_scale_factor, K*DIM, J*DIM, 0, 0);
   
   //has bias
   //TODO: repeating bias
@@ -1095,7 +1095,7 @@ void sp_tiled_conv_rob(
         elem_t * output,
         acc_t * bias,
 
-        bool no_bias, bool no_pool) {
+        bool no_bias, bool no_pool, int weight_bank, bool first_k) {
 
     const int orows = porows * pool_stride + pool_size - 1 - pupad - pdpad;
     const int ocols = pocols * pool_stride + pool_size - 1 - plpad - prpad;
@@ -1110,34 +1110,14 @@ void sp_tiled_conv_rob(
 
     // Calculate spad address offsets
     const int out_channels_per_bank = ochs / DIM + (ochs % DIM != 0);
-    const int B_rows = out_channels_per_bank * kcols * krows * kchs;
-
-    const uint32_t A_sp_addr_start = 0;
-    const uint32_t B_sp_addr_start = BANK_NUM * BANK_ROWS - B_rows;
+	 
+	 const uint32_t A_sp_addr_start = 0;
+    const uint32_t B_sp_addr_start = (BANK_NUM - weight_bank) * BANK_ROWS;
     const uint32_t D_sp_addr_start = 1 << (ADDR_LEN - 1);
     const uint32_t C_sp_addr_start = 3 << (ADDR_LEN - 2);
 
 	 const int odims = orows * ocols;
-
-
-    // printf("mvin bias\n");
-    // mvin bias
-    if (!no_bias && bias != NULL) {
-        // TODO we probably don't need quite this many nested loops for this part
-        gemmini_config_ld(0);
-		  for (int b = 0; b < batches; b++)
-              for (int orow = 0; orow < orows; orow++)
-                    for (int ocol = 0; ocol < ocols; ocol += DIM) {
-                        const int I = ocols - ocol > DIM ? DIM : ocols - ocol;
-								for (int och = 0; och < ochs; och += DIM) {
-									const int J = ochs - och > DIM ? DIM : ochs - och;
-									const uint32_t D_sp_addr = D_sp_addr_start + b*orows*ocols*(ochs/DIM) + orow*ocols*(ochs/DIM) + (och/DIM)*ocols + ocol;
-  	               			gemmini_extended_mvin(bias + och,
-                           		 D_sp_addr,
-                           		 J, I);
-               			}
-           				}
-    }
+	 bool store = (output != NULL) ? true : false;
 
     // mvin input
     // printf("mvin inputs\n");
@@ -1157,15 +1137,11 @@ void sp_tiled_conv_rob(
 							 } else if (icol >= icols_unpadded) {
 								  I = icols_unpadded + rpad - icol > DIM ? DIM : icols_unpadded + rpad - icol;
 							 }
-
 							 const int icol_padded = icol + lpad;
 
 							 for (int ich = 0; ich < ichs; ich += DIM) {
 								  const int K = ichs - ich > DIM ? DIM : ichs - ich;
-
-						//		  const uint32_t A_sp_addr = A_sp_addr_start + (ich / DIM) * batches * irows * icols + b * irows * icols + irow_padded * icols + icol_padded;
 								  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow_padded*icols*(ichs/DIM) + (ich/DIM)*icols + icol_padded;
-
 								  gemmini_extended_mvin(in,
 											 A_sp_addr,
 											 K, I);
@@ -1177,60 +1153,72 @@ void sp_tiled_conv_rob(
 			  }
 		 }
 	}
-
-    gemmini_config_ld(in_channels * sizeof(elem_t));
-    gemmini_fence(); // TODO fix ROB to get rid of this requirement
-	 for (int b = 0; b < batches; b++) {
-        for (int irow = 0; irow < irows_unpadded; irow++) {
-            const int irow_padded = irow + upad;
-            for (int ich = 0; ich < ichs; ich += DIM) {
-                const int K = ichs - ich > DIM ? DIM : ichs - ich;
-					 for (int icol = 0; icol < icols_unpadded; icol += DIM) {
+   const size_t pad_och = ochs%DIM;
+   const size_t pad_kch = kchs%DIM;
+	gemmini_rob_config_ld(1, 1, in_channels*sizeof(elem_t), out_channels*sizeof(elem_t), MVIN_SCALE_ONE, MVIN_SCALE_ONE, ichs, ochs, icols_unpadded, upad);
+	
+   // mvin A	
+	for (int b = 0; b < batches; b++) {
+		const int row_end = DIM - (icols_unpadded % DIM);
+		for (int irow = 0; irow < irows_unpadded; irow++) {
+           const int irow_padded = irow + upad;
+           elem_t * in = input + (b*in_dim*in_dim + irow*in_dim) * in_channels;
+ 			  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow_padded*icols*(ichs/DIM);
+ 			  gemmini_rob_mvinA(in, A_sp_addr, row_end, pad_kch);
+/*
+           for (int ich = 0; ich < ichs; ich += DIM) {
+               const int K = ichs - ich > DIM ? DIM : ichs - ich;
+				   for (int icol = 0; icol < icols_unpadded; icol += DIM) {
                	  int I = icols_unpadded - icol > DIM ? DIM : icols_unpadded - icol;
                 	  const int icol_padded = icol + lpad;
-	
                     elem_t * in = input + (b*in_dim*in_dim + irow*in_dim + icol) * in_channels + ich;
-
-//                    const uint32_t A_sp_addr = A_sp_addr_start + (ich / DIM) * batches * irows * icols + b * irows * icols + irow_padded * icols + icol_padded;
-						  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow_padded*icols*(ichs/DIM) + (ich/DIM)*icols + icol_padded;
-
+   					  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow_padded*icols*(ichs/DIM) + (ich/DIM)*icols + icol_padded;
                     gemmini_extended_mvin(in,
                             A_sp_addr,
                             K, I);
 
                 }
             }
-		  }
+*/
+		 }
 	 }
-	 gemmini_fence(); // TODO fix ROB to get rid of this requirement
-
-    // mvin weights
-    // printf("mvin weights\n");
-    gemmini_config_ld(out_channels * sizeof(elem_t));
-    for (int krow = 0; krow < krows; krow++)
+	
+	
+	for (int krow = 0; krow < krows; krow++)
        for (int kcol = 0; kcol < kcols; kcol++) {
 			 for (int kch = 0; kch < kchs; kch += DIM) {
-				 const int K = kchs - kch > DIM ? DIM : kchs - kch;
+				 const size_t K = kchs - kch > DIM ? DIM : kchs - kch;
+				 const uint32_t B_sp_addr = B_sp_addr_start + krow*kcols*ochs*(kchs/DIM) + kcol*ochs*(kchs/DIM) + (kch/DIM)*ochs;
+				 gemmini_rob_mvinB(weights + (krow*kernel_dim*in_channels + kcol*in_channels+kch) * out_channels, B_sp_addr, pad_och, K);
+/*
 				 for (int och = 0; och < ochs; och += DIM){ 
 					 const int J = ochs - och > DIM ? DIM : ochs - och;
-					 //const uint32_t B_sp_addr = B_sp_addr_start + (och / DIM) * krows * kcols * kchs + krow * kcols * kchs + kcol * kchs + kch;
 					 const uint32_t B_sp_addr = B_sp_addr_start + krow*kcols*ochs*(kchs/DIM) + kcol*ochs*(kchs/DIM) + (kch/DIM)*ochs + och;
 					 gemmini_extended_mvin(weights + (krow*kernel_dim*in_channels + kcol*in_channels + kch) * out_channels + och,
                         B_sp_addr,
                         J, K);
 				 }
+*/
 			 }
 		 }
-    for (int b = 0; b < batches; b++)
+
+	const int c_dram_cj_coeff = 1;
+	 for (int b = 0; b < batches; b++)
 		 for (int krow = 0; krow < krows; krow++) 
 			 for (int kcol = 0; kcol < kcols; kcol++) {
-					  //int icol = ocol * stride + kcol;
-					  //channels
 				 for (int orow = 0; orow < orows; orow++){
 					 int irow = orow * stride + krow;
 					 for (int ocol = 0; ocol < ocols; ocol += DIM) {
 						 const int I = ocols - ocol > DIM ? DIM : ocols - ocol;
 					  	 int icol = ocol * stride + kcol;
+						 const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow*icols*(ichs/DIM) + icol;
+						 const uint32_t C_sp_addr = C_sp_addr_start + b*orows*ocols*(ochs/DIM) + orow*ocols*(ochs/DIM) + ocol;
+						 const uint32_t B_sp_addr = B_sp_addr_start + krow*kcols*ochs*(kchs/DIM) + kcol*ochs*(kchs/DIM);
+						 gemmini_rob_compute(A_sp_addr, B_sp_addr, C_sp_addr, I, pad_och, pad_kch, store, first_k);
+						 if(store | mvin_bias){
+							 gemmini_rob_store(c_dram_cj_coeff, output + (b*out_dim*out_dim + orow*out_dim + ocol)*out_channels, 0); //D_row_stride = 0 -> bias + och
+						 }
+/*
 						 for (int kch = 0; kch < kchs; kch += DIM) {
 					 	    const int K = kchs - kch > DIM ? DIM : kchs - kch;
 							 const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow*icols*(ichs/DIM) + (kch/DIM)*icols + icol;
@@ -1250,11 +1238,30 @@ void sp_tiled_conv_rob(
                           gemmini_extended_compute_preloaded(A_sp_addr, GARBAGE_ADDR, K, I, J, I);
 							 }
 						 }
+*/
 					 }
 				 }
 			 }
 
-
+/*
+    // printf("mvin bias\n");
+    // mvin bias
+    if (!no_bias && bias != NULL) {
+        // TODO we probably don't need quite this many nested loops for this part
+        gemmini_config_ld(0);
+		  for (int b = 0; b < batches; b++)
+              for (int orow = 0; orow < orows; orow++)
+                    for (int ocol = 0; ocol < ocols; ocol += DIM) {
+                        const int I = ocols - ocol > DIM ? DIM : ocols - ocol;
+								for (int och = 0; och < ochs; och += DIM) {
+									const int J = ochs - och > DIM ? DIM : ochs - och;
+									const uint32_t D_sp_addr = D_sp_addr_start + b*orows*ocols*(ochs/DIM) + orow*ocols*(ochs/DIM) + (och/DIM)*ocols + ocol;
+  	               			gemmini_extended_mvin(bias + och,
+                           		 D_sp_addr,
+                           		 J, I);
+               			}
+           				}
+    }
     // mvout output
     if (output != NULL) {
         if (no_pool) {
@@ -1272,7 +1279,6 @@ void sp_tiled_conv_rob(
                     }
         } else {
             gemmini_extended_config_st(out_channels * sizeof(elem_t), pool_stride, pool_size, pool_out_dim, porows, pocols, orows, ocols, pupad, plpad);
-
             gemmini_fence(); // TODO remove this when the ROB can accurately handle these
             for (int b = 0; b < batches; b++) {
                 for (int poch = 0; poch < pochs; poch += DIM) {
@@ -1290,7 +1296,7 @@ void sp_tiled_conv_rob(
             gemmini_fence();
         }
     }
-
+*/
 }
 
 void sp_tiled_conv(
