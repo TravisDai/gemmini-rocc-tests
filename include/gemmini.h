@@ -256,7 +256,7 @@ scale_acc_t_bits scale_acc_t_to_scale_acc_t_bits(scale_acc_t x) {
 	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(scale) << 33) | ((uint64_t)(repeating_bias) << 32) | ((uint64_t)(stride)), D, R_CONFIG_mvinD)
 
 #define gemmini_rob_mvinA(dram_base, spad_base, row_I, pad_K, A_level2, upad, coeff) \
-	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(spad_base) << ADDR_LEN) | ((uint64_t)(A_level2) << 20) | ((uint64_t)(coeff) << 14) | ((uint64_t)(upad) << 12) | ((uint64_t)(row_I) << 7) | ((uint64_t)(pad_K) << 2) | CONFIG_LD, dram_base, R_MVIN)
+	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(spad_base) << ADDR_LEN) | ((uint64_t)(A_level2) << 25) | ((uint64_t)(coeff) << 19) | ((uint64_t)(upad) << 12) | ((uint64_t)(row_I) << 7) | ((uint64_t)(pad_K) << 2) | CONFIG_LD, dram_base, R_MVIN)
 
 #define gemmini_rob_mvinB(dram_base, spad_base, pad_J, row_K, B_level2, coeff) \
 	ROCC_INSTRUCTION_RS1_RS2(XCUSTOM_ACC, ((uint64_t)(spad_base) << ADDR_LEN) | ((uint64_t)(B_level2) << 20) | ((uint64_t)(coeff) << 12) | ((uint64_t)(pad_J) << 7) | ((uint64_t)(row_K) << 2) | CONFIG_EX, dram_base, R_MVIN)
@@ -1124,7 +1124,7 @@ void sp_tiled_conv_rob(
 	 bool store = (output != NULL) ? true : false;
 	 bool mvin_bias = (!no_bias && bias != NULL) ? true : false; 
 	 const size_t ichs_dim = ichs%DIM == 0 ? ichs/DIM : ichs/DIM + 1;
-	
+/*	
 	 // mvin input
     // printf("mvin inputs\n");
 	if(upad!=0||dpad!=0||lpad!=0||rpad!=0){
@@ -1159,14 +1159,7 @@ void sp_tiled_conv_rob(
 			  }
 		 }
 	}
-   const size_t pad_och = (ochs%DIM == 0) ? 0 : DIM - ochs%DIM;
-   const size_t pad_kch = (kchs%DIM == 0) ? 0 : DIM - kchs%DIM;
-	const size_t poch_dim = (pochs%DIM == 0) ? pochs/DIM : pochs/DIM + 1;
-	gemmini_rob_config_ld(1, 1, in_channels*sizeof(elem_t), MVIN_SCALE_ONE, out_channels*sizeof(elem_t), MVIN_SCALE_ONE, ichs, ochs);
-	gemmini_rob_config_bias(0, MVIN_SCALE_ONE, mvin_bias, bias); //repeating bias = 1, stride = 0 -> conv channel bias
-	gemmini_rob_config_st(out_channels * sizeof(elem_t), pool_stride, pool_size, pool_out_dim, porows, pocols, orows, ocols, pupad, plpad, poch_dim);
-   // mvin A
-	printf("mvin input \n");
+
 	for (int b = 0; b < batches; b++) {
 		const int row_end = icols_unpadded % DIM;
 		for (int irow = 0; irow < irows_unpadded; irow++) {
@@ -1174,24 +1167,52 @@ void sp_tiled_conv_rob(
            elem_t * in = input + (b*in_dim*in_dim + irow*in_dim) * in_channels;
  			  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*ichs_dim + irow_padded*icols*ichs_dim;
 			  gemmini_rob_mvinA(in, A_sp_addr, row_end, pad_kch, icols_unpadded, lpad, icols);
-/*
-           for (int ich = 0; ich < ichs; ich += DIM) {
-               const int K = ichs - ich > DIM ? DIM : ichs - ich;
-				   for (int icol = 0; icol < icols_unpadded; icol += DIM) {
-               	  int I = icols_unpadded - icol > DIM ? DIM : icols_unpadded - icol;
-                	  const int icol_padded = icol + lpad;
-                    elem_t * in = input + (b*in_dim*in_dim + irow*in_dim + icol) * in_channels + ich;
-   					  const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*(ichs/DIM) + irow_padded*icols*(ichs/DIM) + (ich/DIM)*icols + icol_padded;
-                    gemmini_extended_mvin(in,
-                            A_sp_addr,
-                            K, I);
-
-                }
-            }
-*/
-		 }
+		}
+	 }
+	*/
+	const size_t pad_och = (ochs%DIM == 0) ? 0 : DIM - ochs%DIM;
+   const size_t pad_kch = (kchs%DIM == 0) ? 0 : DIM - kchs%DIM;
+	const size_t poch_dim = (pochs%DIM == 0) ? pochs/DIM : pochs/DIM + 1;
+	
+	//gemmini_rob_config_ld(1, 1, 0, MVIN_SCALE_ONE, 0, MVIN_SCALE_ONE, ichs, ochs);
+	//gemmini_config_ld(0);
+	static elem_t zeros[MAX_BYTES / sizeof(elem_t)] = {0};
+	elem_t * zero = &zeros[0];
+	 for (int b = 0; b < batches; b++) {
+		  for (int irow = -upad; irow < irows_unpadded + dpad; irow++) {
+		 	   const int irow_padded = irow + upad;
+				const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*ichs_dim + irow_padded*icols*ichs_dim;
+				if(irow < 0 || irow >= irows_unpadded){
+					gemmini_rob_config_ld(1, 1, 0, MVIN_SCALE_ONE, out_channels*sizeof(elem_t), MVIN_SCALE_ONE, ichs, ochs);
+					gemmini_rob_mvinA(zero, A_sp_addr, 0, pad_kch, icols, 0, icols);
+				}
+				else{
+					for(int icol = -lpad; icol < icols_unpadded + rpad; ){
+						int I = icols_unpadded;
+						if(icol < 0 || icol == icols_unpadded){
+							I = (icol == -lpad) ? -icol : icols_unpadded + rpad - icol;
+							gemmini_rob_config_ld(1, 1, 0, MVIN_SCALE_ONE, out_channels*sizeof(elem_t), MVIN_SCALE_ONE, ichs, ochs);
+							gemmini_rob_mvinA(zero, A_sp_addr, 0, pad_kch, I, lpad + icol, icols); 
+						}
+						else{
+   						gemmini_rob_config_ld(1, 1, in_channels*sizeof(elem_t), MVIN_SCALE_ONE, out_channels*sizeof(elem_t), MVIN_SCALE_ONE, ichs, ochs);
+						   elem_t * in = input + (b*in_dim*in_dim + irow*in_dim) * in_channels;
+						   const uint32_t A_sp_addr = A_sp_addr_start + b*irows*icols*ichs_dim + irow_padded*icols*ichs_dim;
+						   gemmini_rob_mvinA(in, A_sp_addr, 0, pad_kch, icols_unpadded, lpad, icols);
+						}
+						icol += I;
+					}
+				}
+		  }
 	 }
 	
+
+   //gemmini_rob_config_ld(1, 1, in_channels*sizeof(elem_t), MVIN_SCALE_ONE, out_channels*sizeof(elem_t), MVIN_SCALE_ONE, ichs, ochs);
+	gemmini_rob_config_bias(0, MVIN_SCALE_ONE, mvin_bias, bias); //repeating bias = 1, stride = 0 -> conv channel bias
+	gemmini_rob_config_st(out_channels * sizeof(elem_t), pool_stride, pool_size, pool_out_dim, porows, pocols, orows, ocols, pupad, plpad, poch_dim);
+   // mvin A
+
+
 	printf("mvin weight\n");
 	for (int krow = 0; krow < krows; krow++)
        for (int kcol = 0; kcol < kcols; kcol++) {
